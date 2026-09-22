@@ -20,7 +20,10 @@ import java.io.FileWriter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
+import android.provider.Settings
+import retrofit2.Call
+import retrofit2.Callback
+import retrofit2.Response
 class MainActivity : AppCompatActivity() {
 
     private lateinit var bluetoothAdapter: BluetoothAdapter
@@ -208,6 +211,41 @@ class MainActivity : AppCompatActivity() {
 
                     if (packet != null) {
                         tvSensorData.text = packet.toString()
+
+                        val sensorDataToSend = SensorData(
+                            RSSI = rssi.toString(),
+                            Team = "YOUR_TEAM",
+                            Sensor = deviceName,
+                            Mac = macAddress,
+                            Temp = packet.temperature.toDouble(),
+                            Humidity = packet.humidity.toDouble(),
+                            AQI = packet.aqi,
+                            TVOC = packet.tvoc,
+                            eCO2 = packet.eco2,
+                            Timestamp = packet.timestamp,
+                            Lat = 0.0,
+                            Lon = 0.0,
+                            Sender = "Android"
+                        )
+
+                        RetrofitClient.apiService.sendSensorData(sensorDataToSend)
+                            .enqueue(object : retrofit2.Callback<ApiResponse> {
+                                override fun onResponse(
+                                    call: retrofit2.Call<ApiResponse>,
+                                    response: retrofit2.Response<ApiResponse>
+                                ) {
+                                    addLog("서버 전송 성공: ${response.code()}")
+                                }
+
+                                override fun onFailure(
+                                    call: retrofit2.Call<ApiResponse>,
+                                    t: Throwable
+                                ) {
+                                    addLog("서버 전송 실패: ${t.message}")
+                                }
+                            })
+
+
 
                         val receivedTime = SimpleDateFormat(
                             "yyyy-MM-dd HH:mm:ss",
