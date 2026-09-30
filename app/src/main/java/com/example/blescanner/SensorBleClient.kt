@@ -105,6 +105,12 @@ class SensorBleClient(private val context: Context) {
                         "Unknown Sensor"
                     }
 
+                //BLE local name 설정시 필터링 변경 요망
+
+                if (deviceName != "Opensrc_team7") {
+                    return
+                }
+
                 val sensorData =
                     SensorDataParser.parse(
                         bytes = payload,
