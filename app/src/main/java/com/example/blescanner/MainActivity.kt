@@ -1,345 +1,382 @@
 package com.example.blescanner
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanResult
-import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.ContextCompat
-import java.io.File
-import java.io.FileWriter
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import android.provider.Settings
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
+import androidx.core.app.ActivityCompat
+import org.json.JSONObject
+
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var bluetoothAdapter: BluetoothAdapter
+    private lateinit var sensorBleClient: SensorBleClient
 
-    private lateinit var tvStatus: TextView
-    private lateinit var tvDeviceName: TextView
-    private lateinit var tvMac: TextView
-    private lateinit var tvRssi: TextView
-    private lateinit var tvSensorData: TextView
-    private lateinit var tvLog: TextView
+    private lateinit var statusText: TextView
+    private lateinit var testHttpButton: Button
+    private lateinit var startButton: Button
+    private lateinit var stopButton: Button
 
-    private lateinit var btnScan: Button
-    private lateinit var btnStop: Button
-    private lateinit var btnSave: Button
-
-    private val collectedData = mutableListOf<String>()
-
-    // 권한 요청 결과 처리
     private val permissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestMultiplePermissions()
         ) { permissions ->
 
-            val allGranted = permissions.values.all { it }
+            val allGranted =
+                permissions.values.all { it }
 
             if (allGranted) {
-                addLog("블루투스 권한이 허용되었습니다.")
-                startBleScan()
+                statusText.text =
+                    "Permission OK\nReady to scan"
+
+                startButton.isEnabled = true
+                testHttpButton.isEnabled = true
+
+                fetchLocation()
+
             } else {
-                addLog("블루투스 권한이 필요합니다.")
-                tvStatus.text = "●  권한 필요"
+                statusText.text =
+                    "Bluetooth / Location permission required"
+
+                startButton.isEnabled = false
+                testHttpButton.isEnabled = false
             }
         }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
         super.onCreate(savedInstanceState)
+
         setContentView(R.layout.activity_main)
 
-        // UI 연결
-        tvStatus = findViewById(R.id.tvStatus)
-        tvDeviceName = findViewById(R.id.tvDeviceName)
-        tvMac = findViewById(R.id.tvMac)
-        tvRssi = findViewById(R.id.tvRssi)
-        tvSensorData = findViewById(R.id.tvSensorData)
-        tvLog = findViewById(R.id.tvLog)
+        statusText =
+            findViewById(R.id.statusText)
 
-        btnScan = findViewById(R.id.btnScan)
-        btnStop = findViewById(R.id.btnStop)
-        btnSave = findViewById(R.id.btnSave)
+        testHttpButton =
+            findViewById(R.id.testHttpButton)
 
-        // BluetoothAdapter 생성
-        val bluetoothManager =
-            getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        startButton =
+            findViewById(R.id.startButton)
 
-        bluetoothAdapter = bluetoothManager.adapter
+        stopButton =
+            findViewById(R.id.stopButton)
 
-        // 스캔 시작
-        btnScan.setOnClickListener {
-            checkPermissionAndScan()
-        }
+        sensorBleClient =
+            SensorBleClient(this)
 
-        // 스캔 중지
-        btnStop.setOnClickListener {
-            stopBleScan()
-        }
+        sensorBleClient.listener =
+            object :
+                SensorBleClient.OnDataTransmittedListener {
 
-        // CSV는 다음 단계에서 구현
-        btnSave.setOnClickListener {
-            saveCsvFile()
-        }
-    }
+                override fun onDataTransmitted(
+                    sensorData: SensorData,
+                    urlUsed: String,
+                    isSuccess: Boolean,
+                    responseOrError: String
+                ) {
+                    runOnUiThread {
 
-    // 필요한 권한 확인
-    private fun checkPermissionAndScan() {
+                        val statusHeader =
+                            if (isSuccess) {
+                                "HTTP TRANSMISSION SUCCESS"
+                            } else {
+                                "HTTP TRANSMISSION ERROR"
+                            }
 
-        val permissions = mutableListOf<String>()
+                        val responseDetails =
+                            if (isSuccess) {
+                                parseAndFormatResponse(
+                                    responseOrError
+                                )
+                            } else {
+                                responseOrError
+                            }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        statusText.text =
+                            """
+                            [$statusHeader]
 
-            if (ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_SCAN
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+                            URL:
+                            $urlUsed
+
+                            Sensor:
+                            ${sensorData.sensor}
+
+                            MAC:
+                            ${sensorData.mac}
+
+                            Temp:
+                            ${sensorData.temp} °C
+
+                            Humidity:
+                            ${sensorData.humidity} %
+
+                            AQI:
+                            ${sensorData.aqi}
+
+                            TVOC:
+                            ${sensorData.tvoc} ppb
+
+                            eCO2:
+                            ${sensorData.eco2} ppm
+
+                            Timestamp:
+                            ${sensorData.timestamp}
+
+                            Location:
+                            ${sensorData.lat}, ${sensorData.lon}
+
+                            --- Server Response ---
+                            $responseDetails
+                            """.trimIndent()
+                    }
+                }
+
+                override fun onRawDataReceived(
+                    macAddress: String,
+                    rawHex: String
+                ) {
+                    runOnUiThread {
+
+                        statusText.text =
+                            """
+                            BLE SENSOR DETECTED
+
+                            MAC:
+                            $macAddress
+
+                            13-byte ServiceData:
+                            $rawHex
+
+                            Sending to server...
+                            """.trimIndent()
+                    }
+                }
             }
 
-            if (ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
+        startButton.isEnabled = false
+        testHttpButton.isEnabled = false
 
-        } else {
+        /*
+         * 실제 센서 없이 서버 POST만 시험하는 버튼.
+         *
+         * 현재는 정확한 Team 7 key가 확인되지 않았으므로
+         * 임의 데이터를 서버로 보내지 않게 막아둠.
+         */
+        testHttpButton.setOnClickListener {
 
-            if (ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                ) != PackageManager.PERMISSION_GRANTED
-            ) {
-                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
-        }
+            statusText.text = "Sending test data to server..."
 
-        if (permissions.isEmpty()) {
-            startBleScan()
-        } else {
-            permissionLauncher.launch(permissions.toTypedArray())
-        }
-    }
+            val testData = SensorData(
+                key = "opensrc-team 7",
+                sender = "android-test",
+                sensor = "team7 sensor",
+                mac = "00:11:22:33:44:55",
+                temp = 24.1,
+                humidity = 48.0,
+                aqi = 2,
+                tvoc = 90,
+                eco2 = 620,
+                timestamp = System.currentTimeMillis() / 1000,
+                lat = 0.0,
+                lon = 0.0
+            )
 
-    // BLE 스캔 시작
-    @SuppressLint("MissingPermission")
-    private fun startBleScan() {
+            HttpApiClient().sendSensorData(
+                testData,
+                object : HttpApiClient.HttpCallback {
 
-        if (!bluetoothAdapter.isEnabled) {
-            tvStatus.text = "●  블루투스가 꺼져 있습니다"
-            addLog("휴대폰의 블루투스를 켜주세요.")
-            return
-        }
+                    override fun onSuccess(
+                        urlUsed: String,
+                        responseBody: String
+                    ) {
+                        runOnUiThread {
+                            statusText.text =
+                                """
+                        SERVER UPLOAD SUCCESS
 
-        val bluetoothLeScanner = bluetoothAdapter.bluetoothLeScanner
+                        URL:
+                        $urlUsed
 
-        if (bluetoothLeScanner == null) {
-            addLog("BLE Scanner를 사용할 수 없습니다.")
-            return
-        }
-
-        bluetoothLeScanner.startScan(scanCallback)
-
-        tvStatus.text = "●  스캔 중"
-        addLog("BLE 스캔을 시작했습니다.")
-    }
-
-    // BLE 스캔 중지
-    @SuppressLint("MissingPermission")
-    private fun stopBleScan() {
-
-        bluetoothAdapter.bluetoothLeScanner?.stopScan(scanCallback)
-
-        tvStatus.text = "●  스캔 중지"
-        addLog("BLE 스캔을 중지했습니다.")
-    }
-
-    // BLE 장치가 발견될 때마다 실행
-    private val scanCallback = object : ScanCallback() {
-
-        @SuppressLint("MissingPermission")
-        override fun onScanResult(
-            callbackType: Int,
-            result: ScanResult
-        ) {
-            super.onScanResult(callbackType, result)
-
-            val device = result.device
-
-            val deviceName =
-                device.name ?: result.scanRecord?.deviceName ?: "이름 없는 장치"
-
-            val macAddress = device.address
-            val rssi = result.rssi
-
-            // 이번 실습에서 찾는 Raspberry Pi만 표시
-            if (deviceName == "opensrc_week_3") {
-
-                tvDeviceName.text = deviceName
-                tvMac.text = "MAC  $macAddress"
-                tvRssi.text = "RSSI  $rssi dBm"
-
-                // 현재는 원본 패킷 표시
-                // 0x181A = Environmental Sensing Service
-                val serviceUuid =
-                    android.os.ParcelUuid.fromString(
-                        "0000181A-0000-1000-8000-00805F9B34FB"
-                    )
-
-                val sensorData =
-                    result.scanRecord?.getServiceData(serviceUuid)
-
-                if (sensorData != null) {
-
-                    val packet = SensorPacket.parse(sensorData)
-
-                    if (packet != null) {
-                        tvSensorData.text = packet.toString()
-
-                        val sensorDataToSend = SensorData(
-                            RSSI = rssi.toString(),
-                            Team = "YOUR_TEAM",
-                            Sensor = deviceName,
-                            Mac = macAddress,
-                            Temp = packet.temperature.toDouble(),
-                            Humidity = packet.humidity.toDouble(),
-                            AQI = packet.aqi,
-                            TVOC = packet.tvoc,
-                            eCO2 = packet.eco2,
-                            Timestamp = packet.timestamp,
-                            Lat = 0.0,
-                            Lon = 0.0,
-                            Sender = "Android"
-                        )
-
-                        RetrofitClient.apiService.sendSensorData(sensorDataToSend)
-                            .enqueue(object : retrofit2.Callback<ApiResponse> {
-                                override fun onResponse(
-                                    call: retrofit2.Call<ApiResponse>,
-                                    response: retrofit2.Response<ApiResponse>
-                                ) {
-                                    addLog("서버 전송 성공: ${response.code()}")
-                                }
-
-                                override fun onFailure(
-                                    call: retrofit2.Call<ApiResponse>,
-                                    t: Throwable
-                                ) {
-                                    addLog("서버 전송 실패: ${t.message}")
-                                }
-                            })
-
-
-
-                        val receivedTime = SimpleDateFormat(
-                            "yyyy-MM-dd HH:mm:ss",
-                            Locale.getDefault()
-                        ).format(Date())
-
-                        val csvRow =
-                            "$receivedTime,$deviceName,$macAddress,$rssi," +
-                                    "${packet.temperature},${packet.humidity}," +
-                                    "${packet.aqi},${packet.tvoc},${packet.eco2},${packet.timestamp}"
-
-                        collectedData.add(csvRow)
-
-
-                        addLog(
-                            "센서 데이터 수신 / " +
-                                    "온도 ${packet.temperature}°C / " +
-                                    "습도 ${packet.humidity}%"
-                        )
-                    } else {
-                        tvSensorData.text = "패킷 분석 실패"
-                        addLog("센서 데이터 길이가 올바르지 않습니다.")
+                        Response:
+                        $responseBody
+                        """.trimIndent()
+                        }
                     }
 
-                } else {
-                    tvSensorData.text = "0x181A 센서 데이터 수신 대기 중"
+                    override fun onError(
+                        urlUsed: String,
+                        statusCode: Int,
+                        errorBody: String
+                    ) {
+                        runOnUiThread {
+                            statusText.text =
+                                """
+                        SERVER UPLOAD FAILED
+
+                        URL:
+                        $urlUsed
+
+                        Status:
+                        $statusCode
+
+                        Error:
+                        $errorBody
+                        """.trimIndent()
+                        }
+                    }
+                }
+            )
+        }
+
+        startButton.setOnClickListener {
+
+            if (!isBluetoothEnabled()) {
+
+                val intent =
+                    Intent(
+                        BluetoothAdapter.ACTION_REQUEST_ENABLE
+                    )
+
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                    ActivityCompat.checkSelfPermission(
+                        this,
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) == PackageManager.PERMISSION_GRANTED
+                ) {
+                    startActivity(intent)
                 }
 
-                addLog("$deviceName 발견 / RSSI $rssi dBm")
-            }
-        }
 
-        override fun onScanFailed(errorCode: Int) {
-            super.onScanFailed(errorCode)
-
-            tvStatus.text = "●  스캔 실패"
-            addLog("BLE 스캔 실패 (오류 코드: $errorCode)")
-        }
-    }
-
-    private fun addLog(message: String) {
-
-        val oldLog = tvLog.text.toString()
-
-        tvLog.text =
-            if (oldLog.isBlank()) {
-                message
             } else {
-                "$message\n$oldLog"
-            }
-    }
-    private fun saveCsvFile() {
 
-        if (collectedData.isEmpty()) {
-            addLog("저장할 센서 데이터가 없습니다.")
-            return
+                fetchLocation()
+
+                sensorBleClient.startScan()
+
+                statusText.text =
+                    """
+                    BLE SCANNING...
+
+                    Waiting for 13-byte sensor ServiceData...
+                    """.trimIndent()
+            }
         }
 
-        try {
-            val time = SimpleDateFormat(
-                "yyyyMMdd_HHmmss",
-                Locale.getDefault()
-            ).format(Date())
+        stopButton.setOnClickListener {
 
-            val fileName = "BLE_Sensor_$time.csv"
+            sensorBleClient.stopScan()
 
-            val file = File(
-                getExternalFilesDir(null),
-                fileName
-            )
+            statusText.text =
+                "BLE scan stopped"
+        }
 
-            FileWriter(file).use { writer ->
+        requestPermissions()
+    }
 
-                // CSV 첫 번째 줄
-                writer.append(
-                    "received_time,device_name,mac_address,rssi," +
-                            "temperature,humidity,aqi,tvoc,eco2,sensor_timestamp\n"
+    private fun fetchLocation() {
+
+        sensorBleClient.currentLat = 0.0
+        sensorBleClient.currentLon = 0.0
+    }
+
+    private fun parseAndFormatResponse(
+        responseJson: String
+    ): String {
+
+        return try {
+
+            val json =
+                JSONObject(responseJson)
+
+            val result =
+                json.optString(
+                    "result",
+                    "N/A"
                 )
 
-                // 수집한 센서 데이터
-                collectedData.forEach { row ->
-                    writer.append(row)
-                    writer.append("\n")
+            val message =
+                json.optString(
+                    "message",
+                    ""
+                )
+
+            val verified =
+                if (json.has("verified")) {
+                    json.opt("verified")
+                        ?.toString()
+                        ?: "N/A"
+                } else {
+                    "N/A"
                 }
-            }
 
-            addLog(
-                "CSV 저장 완료 (${collectedData.size}개 데이터)\n" +
-                        "파일명: $fileName"
-            )
+            """
+            Result: $result
+            Message: $message
+            Verified: $verified
+            """.trimIndent()
 
-        } catch (e: Exception) {
-            addLog("CSV 저장 실패: ${e.message}")
+        } catch (_: Exception) {
+
+            responseJson
         }
     }
 
+    private fun requestPermissions() {
+
+        val permissions =
+            mutableListOf<String>()
+
+        if (
+            Build.VERSION.SDK_INT >=
+            Build.VERSION_CODES.S
+        ) {
+            permissions.add(
+                Manifest.permission.BLUETOOTH_SCAN
+            )
+
+            permissions.add(
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        }
+
+        permissions.add(
+            Manifest.permission.ACCESS_FINE_LOCATION
+        )
+
+        permissions.add(
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
+
+        permissionLauncher.launch(
+            permissions.toTypedArray()
+        )
+    }
+
+    private fun isBluetoothEnabled(): Boolean {
+
+        val bluetoothManager =
+            getSystemService(
+                BLUETOOTH_SERVICE
+            ) as BluetoothManager
+
+        return bluetoothManager
+            .adapter
+            ?.isEnabled == true
+    }
+
+    override fun onDestroy() {
+
+        sensorBleClient.stopScan()
+
+        super.onDestroy()
+    }
 }
